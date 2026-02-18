@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, JSON, Float
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, JSON, Float, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -67,17 +67,26 @@ def init_db():
     """Initialize database tables."""
     Base.metadata.create_all(bind=engine)
 
-    # Migrate: add columns if they don't exist
+    # Migrate: add columns to jobs table if they don't exist
     for col in ["pdf_path", "template_id"]:
         try:
             with engine.connect() as conn:
-                conn.execute(f"SELECT {col} FROM jobs LIMIT 1")
+                conn.execute(text(f"SELECT {col} FROM jobs LIMIT 1"))
         except Exception:
             try:
                 with engine.connect() as conn:
-                    conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT")
+                    conn.execute(text(f"ALTER TABLE jobs ADD COLUMN {col} TEXT"))
+                    conn.commit()
             except Exception:
                 pass
+
+    # Migrate: create templates table if it doesn't exist (handled by create_all above,
+    # but explicit check for older DBs that may have been created before this table)
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT id FROM templates LIMIT 1"))
+    except Exception:
+        Base.metadata.tables["templates"].create(bind=engine, checkfirst=True)
 
 
 def get_db():

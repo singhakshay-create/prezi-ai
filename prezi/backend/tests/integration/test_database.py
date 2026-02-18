@@ -3,10 +3,10 @@
 import json
 import pytest
 from datetime import datetime
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from app.database import Base, Job
+from app.database import Base, Job, init_db
 
 
 class TestJobCRUD:
@@ -105,3 +105,82 @@ class TestJobCRUD:
         assert result == []
         session.close()
         engine.dispose()
+
+    def test_migration_adds_missing_columns(self, monkeypatch):
+        """Regression: init_db() migrates an old jobs table missing pdf_path/template_id.
+
+        This reproduces the bug where SQLAlchemy 2.x requires text() for raw SQL,
+        causing the migration to silently fail and leaving the jobs table without
+        pdf_path and template_id columns, which then caused:
+            sqlite3.OperationalError: table jobs has no column named pdf_path
+        on every INSERT — surfacing as "Failed to start generation" in the UI.
+        """
+        engine = create_engine("sqlite:///:memory:")
+
+        # Simulate an old database: create the jobs table WITHOUT the new columns
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE jobs (
+                    id TEXT PRIMARY KEY,
+                    topic TEXT NOT NULL,
+                    length TEXT NOT NULL,
+                    llm_provider TEXT NOT NULL,
+                    research_provider TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    progress INTEGER,
+                    message TEXT,
+                    error TEXT,
+                    storyline JSON,
+                    research JSON,
+                    quality_score JSON,
+                    pptx_path TEXT,
+                    created_at DATETIME,
+                    completed_at DATETIME
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE templates (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    created_at DATETIME
+                )
+            """))
+            conn.commit()
+
+        # Patch the module-level engine used by init_db so it targets our in-memory DB
+        import app.database as db_module
+        original_engine = db_module.engine
+        db_module.engine = engine
+        try:
+            init_db()
+        finally:
+            db_module.engine = original_engine
+
+        # Both columns must now exist — a full INSERT should succeed without error
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        try:
+            job = Job(
+                id="migration-test",
+                topic="Regression test for missing columns",
+                length="short",
+                llm_provider="claude",
+                research_provider="mock",
+                status="queued",
+                progress=0,
+                message="Testing",
+                pdf_path=None,
+                template_id=None,
+            )
+            session.add(job)
+            session.commit()  # This raised OperationalError before the fix
+
+            saved = session.query(Job).filter(Job.id == "migration-test").first()
+            assert saved is not None
+            assert saved.pdf_path is None
+            assert saved.template_id is None
+        finally:
+            session.close()
+            engine.dispose()
