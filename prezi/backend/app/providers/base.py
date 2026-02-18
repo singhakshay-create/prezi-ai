@@ -28,6 +28,21 @@ class LLMProvider(ABC):
         """
         pass
 
+    async def generate_with_vision(
+        self,
+        prompt: str,
+        image_paths: List[str],
+        system: Optional[str] = None,
+        temperature: float = 0.3,
+        max_tokens: int = 4000,
+    ) -> str:
+        """Generate text from a prompt + images. Falls back to text-only if not overridden."""
+        return await self.generate(prompt, system=system, temperature=temperature, max_tokens=max_tokens)
+
+    def supports_vision(self) -> bool:
+        """Return True if this provider has a real vision implementation."""
+        return False
+
     def get_model_name(self) -> str:
         """Get the model name for this provider."""
         return self.__class__.__name__

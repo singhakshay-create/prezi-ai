@@ -5,7 +5,8 @@ from pptx.dml.color import RGBColor
 from pptx.util import Inches, Pt
 from pptx.oxml.ns import qn
 from app.models import Storyline, ResearchResults
-from typing import Literal
+from app.agents.image_gen import ImageGenerator
+from typing import Literal, Optional
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -16,14 +17,53 @@ import os
 from datetime import datetime
 
 
+def _coerce_float(v) -> float:
+    """Return a float from v, extracting from a dict if necessary."""
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, dict):
+        for val in v.values():
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                pass
+        return 0.0
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _coerce_str(v) -> str:
+    """Return a plain string from v, extracting a label field from a dict if present."""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        for key in ("label", "name", "text", "category", "title"):
+            if key in v:
+                return str(v[key])
+        # Fall back to first string value found
+        for val in v.values():
+            if isinstance(val, str):
+                return val
+        return str(v)
+    return str(v)
+
+
 class SlideGenerator:
     """Generates consulting-style presentations using python-pptx."""
 
-    def __init__(self, template_path: str = None):
+    def __init__(
+        self,
+        template_path: str = None,
+        image_generator: Optional[ImageGenerator] = None,
+    ):
         self.template_path = template_path
+        self.image_generator = image_generator  # None → no AI images
         # McKinsey colors
         self.primary_color = RGBColor(0, 51, 153)  # McKinsey blue
         self.accent_color = RGBColor(0, 176, 240)  # Light blue
+        self._last_pptx_path: str = None
 
     async def create_presentation(
         self,
@@ -42,10 +82,17 @@ class SlideGenerator:
         prs.slide_width = Inches(10)
         prs.slide_height = Inches(7.5)
 
+        # Pre-generate AI images (runs concurrently, returns None if unavailable)
+        img_gen = self.image_generator
+        img_title = await self._fetch_image(img_gen, f"Abstract technology landscape representing: {topic}")
+        img_situation = await self._fetch_image(img_gen, f"Business challenge concept for: {storyline.scqa.complication[:120]}")
+        img_exec = await self._fetch_image(img_gen, f"Strategic insight visualization for: {storyline.governing_thought[:120]}")
+        img_recs = await self._fetch_image(img_gen, f"Action and transformation concept for: {storyline.scqa.answer[:120]}")
+
         # Add slides based on length
-        self._add_title_slide(prs, topic, storyline)
-        self._add_executive_summary(prs, storyline)
-        self._add_situation_slide(prs, storyline)
+        self._add_title_slide(prs, topic, storyline, ai_image=img_title)
+        self._add_executive_summary(prs, storyline, ai_image=img_exec)
+        self._add_situation_slide(prs, storyline, ai_image=img_situation)
         self._add_hypothesis_matrix(prs, storyline, research)
 
         # Add data slides with charts
@@ -62,7 +109,7 @@ class SlideGenerator:
             self._add_value_chain_slide(prs, storyline)
             self._add_heatmap_slide(prs, storyline, research)
 
-        self._add_recommendations(prs, storyline)
+        self._add_recommendations(prs, storyline, ai_image=img_recs)
         self._add_sources(prs, research)
 
         # Save presentation
@@ -72,95 +119,118 @@ class SlideGenerator:
         filepath = f"./data/presentations/{filename}"
 
         prs.save(filepath)
+        self._last_pptx_path = filepath
         return filepath
 
-    def _add_title_slide(self, prs, topic: str, storyline: Storyline):
-        """Add title slide."""
+    def _add_title_slide(self, prs, topic: str, storyline: Storyline, ai_image=None):
+        """Add title slide with optional AI illustration on the right half."""
         slide = prs.slides.add_slide(prs.slide_layouts[6])  # Blank layout
 
-        # Title
-        title_box = slide.shapes.add_textbox(Inches(1), Inches(2.5), Inches(8), Inches(1))
-        title_frame = title_box.text_frame
-        title_frame.text = topic
-        title_para = title_frame.paragraphs[0]
-        title_para.font.size = Pt(32)
-        title_para.font.bold = True
-        title_para.font.color.rgb = self.primary_color
-        title_para.alignment = PP_ALIGN.CENTER
+        # AI image fills right half of slide
+        if ai_image:
+            ai_image.seek(0)
+            slide.shapes.add_picture(ai_image, Inches(5), Inches(0), Inches(5), Inches(7.5))
+        else:
+            # Light-blue gradient panel as placeholder
+            panel = slide.shapes.add_shape(1, Inches(5), Inches(0), Inches(5), Inches(7.5))
+            panel.fill.solid()
+            panel.fill.fore_color.rgb = RGBColor(220, 235, 255)
+            panel.line.color.rgb = RGBColor(200, 220, 255)
+
+        # Left-side dark background band for text
+        band = slide.shapes.add_shape(1, Inches(0), Inches(0), Inches(5), Inches(7.5))
+        band.fill.solid()
+        band.fill.fore_color.rgb = RGBColor(0, 31, 96)
+        band.line.fill.background()
+
+        # Title (left column)
+        title_box = slide.shapes.add_textbox(Inches(0.4), Inches(2.2), Inches(4.4), Inches(1.4))
+        tf = title_box.text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        p.text = topic
+        p.font.size = Pt(28)
+        p.font.bold = True
+        p.font.color.rgb = RGBColor(255, 255, 255)
 
         # Subtitle
-        subtitle_box = slide.shapes.add_textbox(Inches(1), Inches(3.5), Inches(8), Inches(1))
-        subtitle_frame = subtitle_box.text_frame
-        subtitle_frame.text = storyline.governing_thought
-        subtitle_para = subtitle_frame.paragraphs[0]
-        subtitle_para.font.size = Pt(18)
-        subtitle_para.alignment = PP_ALIGN.CENTER
+        sub_box = slide.shapes.add_textbox(Inches(0.4), Inches(3.8), Inches(4.4), Inches(1.2))
+        tf2 = sub_box.text_frame
+        tf2.word_wrap = True
+        p2 = tf2.paragraphs[0]
+        p2.text = storyline.governing_thought
+        p2.font.size = Pt(14)
+        p2.font.color.rgb = RGBColor(180, 210, 255)
 
         # Date
-        date_box = slide.shapes.add_textbox(Inches(1), Inches(6.5), Inches(8), Inches(0.5))
-        date_frame = date_box.text_frame
-        date_frame.text = datetime.now().strftime("%B %Y")
-        date_para = date_frame.paragraphs[0]
-        date_para.font.size = Pt(12)
-        date_para.alignment = PP_ALIGN.CENTER
+        date_box = slide.shapes.add_textbox(Inches(0.4), Inches(6.8), Inches(4.4), Inches(0.5))
+        p3 = date_box.text_frame.paragraphs[0]
+        p3.text = datetime.now().strftime("%B %Y")
+        p3.font.size = Pt(11)
+        p3.font.color.rgb = RGBColor(140, 170, 220)
 
-    def _add_executive_summary(self, prs, storyline: Storyline):
-        """Add executive summary slide."""
+    def _add_executive_summary(self, prs, storyline: Storyline, ai_image=None):
+        """Add executive summary slide with optional AI illustration on the right."""
         slide = prs.slides.add_slide(prs.slide_layouts[6])
-
-        # Title
         self._add_slide_title(slide, "Executive Summary")
 
-        # Content
-        content_box = slide.shapes.add_textbox(Inches(1), Inches(1.5), Inches(8), Inches(5))
+        # Left text column (narrower to leave room for image)
+        content_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.4), Inches(5.0), Inches(5.6))
         tf = content_box.text_frame
         tf.word_wrap = True
 
-        # Add SCQA elements as bullets
         points = [
-            f"Situation: {storyline.scqa.situation[:150]}...",
-            f"Challenge: {storyline.scqa.complication[:150]}...",
-            f"Recommendation: {storyline.scqa.answer[:150]}..."
+            ("Situation", storyline.scqa.situation[:200]),
+            ("Challenge", storyline.scqa.complication[:200]),
+            ("Recommendation", storyline.scqa.answer[:200]),
         ]
+        for i, (label, text) in enumerate(points):
+            p_label = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+            p_label.text = label
+            p_label.font.size = Pt(13)
+            p_label.font.bold = True
+            p_label.font.color.rgb = self.primary_color
+            p_label.space_before = Pt(10) if i > 0 else Pt(0)
 
-        for point in points:
-            p = tf.add_paragraph()
-            p.text = point
-            p.level = 0
-            p.font.size = Pt(14)
-            p.space_after = Pt(12)
+            p_body = tf.add_paragraph()
+            p_body.text = text
+            p_body.font.size = Pt(11)
+            p_body.space_after = Pt(4)
 
-    def _add_situation_slide(self, prs, storyline: Storyline):
-        """Add situation/context slide."""
+        # Right image column
+        self._add_ai_image_column(slide, ai_image)
+
+    def _add_situation_slide(self, prs, storyline: Storyline, ai_image=None):
+        """Add situation/context slide with optional AI illustration on the right."""
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         self._add_slide_title(slide, "Situation & Context")
 
-        content_box = slide.shapes.add_textbox(Inches(1), Inches(1.5), Inches(8), Inches(5))
+        content_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.4), Inches(5.0), Inches(5.6))
         tf = content_box.text_frame
         tf.word_wrap = True
 
-        # Situation
         p = tf.paragraphs[0]
         p.text = "Current Situation"
-        p.font.size = Pt(16)
+        p.font.size = Pt(14)
         p.font.bold = True
         p.font.color.rgb = self.primary_color
 
         p = tf.add_paragraph()
         p.text = storyline.scqa.situation
-        p.font.size = Pt(12)
-        p.space_after = Pt(20)
+        p.font.size = Pt(11)
+        p.space_after = Pt(16)
 
-        # Complication
         p = tf.add_paragraph()
         p.text = "Key Challenge"
-        p.font.size = Pt(16)
+        p.font.size = Pt(14)
         p.font.bold = True
         p.font.color.rgb = self.primary_color
 
         p = tf.add_paragraph()
         p.text = storyline.scqa.complication
-        p.font.size = Pt(12)
+        p.font.size = Pt(11)
+
+        self._add_ai_image_column(slide, ai_image)
 
     def _add_hypothesis_matrix(self, prs, storyline: Storyline, research: ResearchResults):
         """Add hypothesis matrix slide."""
@@ -195,26 +265,241 @@ class SlideGenerator:
             for cell in row.cells:
                 cell.text_frame.paragraphs[0].font.size = Pt(10)
 
+    # ------------------------------------------------------------------
+    # AI image helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _fetch_image(
+        image_generator: Optional[ImageGenerator], prompt: str
+    ) -> Optional[io.BytesIO]:
+        """Call the image generator if available; silently return None otherwise."""
+        if image_generator and image_generator.available:
+            return await image_generator.generate_image(prompt)
+        return None
+
+    def _add_ai_image_column(
+        self,
+        slide,
+        image_bytes: Optional[io.BytesIO],
+        left: float = 5.8,
+        top: float = 1.2,
+        width: float = 3.8,
+        height: float = 5.6,
+    ):
+        """
+        Place an AI-generated image in the right column of a slide.
+        Adds a subtle light-blue placeholder rectangle when no image is provided
+        so the layout stays symmetric.
+        """
+        if image_bytes:
+            image_bytes.seek(0)
+            slide.shapes.add_picture(
+                image_bytes,
+                Inches(left), Inches(top), Inches(width), Inches(height),
+            )
+        else:
+            # Draw a lightly-tinted placeholder so the column isn't pure white
+            shape = slide.shapes.add_shape(
+                1,  # MSO_SHAPE_TYPE.RECTANGLE
+                Inches(left), Inches(top), Inches(width), Inches(height),
+            )
+            shape.fill.solid()
+            shape.fill.fore_color.rgb = RGBColor(230, 240, 255)
+            shape.line.color.rgb = RGBColor(180, 210, 240)
+
+    # ------------------------------------------------------------------
+    # Data-driven chart renderers
+    # ------------------------------------------------------------------
+
+    def _render_bar_chart(self, chart_data: dict) -> io.BytesIO:
+        """Render a horizontal bar chart from a data dict and return BytesIO PNG."""
+        categories = chart_data.get("categories", [f"Factor {i+1}" for i in range(5)])
+        values = chart_data.get("values", [75, 85, 65, 90, 70])
+        title = chart_data.get("title", "Key Success Factors")
+        x_label = chart_data.get("x_label", "Impact Score")
+
+        # Guard against LLM returning mismatched list lengths
+        n = min(len(categories), len(values))
+        categories, values = categories[:n], values[:n]
+
+        # Coerce to plain types so matplotlib can hash/plot them
+        categories = [_coerce_str(c) for c in categories]
+        values = [_coerce_float(v) for v in values]
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.barh(categories, values, color='#003399')
+        ax.set_xlabel(x_label, fontsize=12)
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.grid(axis='x', alpha=0.3)
+
+        img_bytes = io.BytesIO()
+        plt.savefig(img_bytes, format='png', bbox_inches='tight', dpi=150)
+        img_bytes.seek(0)
+        plt.close()
+        return img_bytes
+
+    def _render_waterfall_chart(self, chart_data: dict) -> io.BytesIO:
+        """Render a waterfall chart from a data dict and return BytesIO PNG."""
+        categories = chart_data.get("categories", ['Starting', 'Revenue\nGrowth', 'Cost\nReduction', 'Efficiency', 'Ending'])
+        values = chart_data.get("values", [100, 25, 15, 10, 150])
+        title = chart_data.get("title", "Value Creation Opportunity")
+
+        # Guard against mismatched list lengths; waterfall needs at least 2 entries
+        n = min(len(categories), len(values))
+        n = max(n, 2)
+        categories, values = categories[:n], values[:n]
+
+        # Coerce to plain types so matplotlib can hash/plot them
+        categories = [_coerce_str(c) for c in categories]
+        values = [_coerce_float(v) for v in values]
+
+        cumulative = []
+        running = 0
+        for i, v in enumerate(values):
+            if i == 0 or i == len(values) - 1:
+                running = v
+            else:
+                running += v
+            cumulative.append(running)
+
+        colors = ['#0033cc'] + ['#00b0f0'] * (len(values) - 2) + ['#0033cc']
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        for i, (cat, val, cum) in enumerate(zip(categories, values, cumulative)):
+            if i == 0:
+                ax.bar(i, val, color=colors[i], edgecolor='black', linewidth=1)
+            elif i == len(categories) - 1:
+                ax.bar(i, val, color=colors[i], edgecolor='black', linewidth=1)
+            else:
+                ax.bar(i, val, bottom=cumulative[i - 1], color=colors[i], edgecolor='black', linewidth=1)
+
+        ax.set_xticks(range(len(categories)))
+        ax.set_xticklabels(categories)
+        ax.set_ylabel(chart_data.get("x_label", "Value ($M)"), fontsize=12)
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.grid(axis='y', alpha=0.3)
+
+        img_bytes = io.BytesIO()
+        plt.savefig(img_bytes, format='png', bbox_inches='tight', dpi=150)
+        img_bytes.seek(0)
+        plt.close()
+        return img_bytes
+
+    def _replace_chart_image(self, slide, chart_data: dict):
+        """Remove existing chart images from slide and add a re-rendered one."""
+        from pptx.oxml.ns import qn as _qn
+
+        # Remove all picture shapes
+        pics_to_remove = [s for s in slide.shapes if s.shape_type == 13]
+        for pic in pics_to_remove:
+            sp_elem = pic._element
+            sp_elem.getparent().remove(sp_elem)
+
+        # Render new chart
+        chart_type = chart_data.get("chart_type", "bar")
+        if chart_type == "waterfall":
+            img_bytes = self._render_waterfall_chart(chart_data)
+        else:
+            img_bytes = self._render_bar_chart(chart_data)
+
+        slide.shapes.add_picture(img_bytes, Inches(1.5), Inches(2), width=Inches(7))
+
+    # ------------------------------------------------------------------
+    # Refinement
+    # ------------------------------------------------------------------
+
+    async def refine_presentation(
+        self,
+        topic: str,
+        storyline,
+        research,
+        length: str,
+        feedback,
+        iteration: int,
+    ) -> str:
+        """Load previous PPTX, apply per-slide feedback in-place, save new version."""
+        from pptx.util import Pt
+
+        if not self._last_pptx_path:
+            # Fallback: regenerate from scratch
+            return await self.create_presentation(topic, storyline, research, length)
+
+        prs = Presentation(self._last_pptx_path)
+
+        for fb in feedback:
+            slide_idx = fb.slide_index
+            if slide_idx >= len(prs.slides):
+                continue
+            slide = prs.slides[slide_idx]
+
+            # Find title and body textboxes by position
+            title_shape = None
+            body_shapes = []
+            for shape in slide.shapes:
+                if not shape.has_text_frame:
+                    continue
+                try:
+                    if shape.top < Inches(1.2):
+                        if title_shape is None:
+                            title_shape = shape
+                    else:
+                        body_shapes.append(shape)
+                except Exception:
+                    body_shapes.append(shape)
+
+            # Replace title
+            if fb.new_title and title_shape:
+                tf = title_shape.text_frame
+                tf.clear()
+                para = tf.paragraphs[0]
+                para.text = fb.new_title
+                para.font.size = Pt(24)
+                para.font.bold = True
+                para.font.color.rgb = self.primary_color
+
+            # Replace body bullets
+            if fb.new_bullets and body_shapes:
+                body_shape = body_shapes[0]
+                tf = body_shape.text_frame
+                tf.clear()
+                for i, bullet in enumerate(fb.new_bullets):
+                    if i == 0:
+                        para = tf.paragraphs[0]
+                    else:
+                        para = tf.add_paragraph()
+                    para.text = bullet
+                    para.font.size = Pt(12)
+                    para.space_after = Pt(8)
+
+            # Replace chart image (skip title/summary slides 0-2)
+            if fb.new_chart_data and slide_idx > 2:
+                self._replace_chart_image(slide, fb.new_chart_data)
+
+        os.makedirs("./data/presentations", exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"presentation_{timestamp}_v{iteration}.pptx"
+        filepath = f"./data/presentations/{filename}"
+        prs.save(filepath)
+        self._last_pptx_path = filepath
+        return filepath
+
+    # ------------------------------------------------------------------
+    # Slide builders (original)
+    # ------------------------------------------------------------------
+
     def _add_bar_chart_slide(self, prs, storyline: Storyline, research: ResearchResults):
         """Add slide with bar chart."""
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         self._add_slide_title(slide, "Market Analysis")
 
-        # Generate mock bar chart
-        fig, ax = plt.subplots(figsize=(8, 4))
-        categories = [f"Factor {i+1}" for i in range(5)]
-        values = [75, 85, 65, 90, 70]
-
-        ax.barh(categories, values, color='#003399')
-        ax.set_xlabel('Impact Score', fontsize=12)
-        ax.set_title('Key Success Factors', fontsize=14, fontweight='bold')
-        ax.grid(axis='x', alpha=0.3)
-
-        # Save to bytes
-        img_bytes = io.BytesIO()
-        plt.savefig(img_bytes, format='png', bbox_inches='tight', dpi=150)
-        img_bytes.seek(0)
-        plt.close()
+        default_data = {
+            "categories": [f"Factor {i+1}" for i in range(5)],
+            "values": [75, 85, 65, 90, 70],
+            "title": "Key Success Factors",
+            "x_label": "Impact Score",
+        }
+        img_bytes = self._render_bar_chart(default_data)
 
         # Add to slide
         slide.shapes.add_picture(img_bytes, Inches(1.5), Inches(2), width=Inches(7))
@@ -224,34 +509,13 @@ class SlideGenerator:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         self._add_slide_title(slide, "Value Creation Waterfall")
 
-        # Generate waterfall chart
-        fig, ax = plt.subplots(figsize=(8, 4))
-
-        categories = ['Starting', 'Revenue\nGrowth', 'Cost\nReduction', 'Efficiency', 'Ending']
-        values = [100, 25, 15, 10, 150]
-        cumulative = [100, 125, 140, 150, 150]
-
-        colors = ['#0033cc', '#00b0f0', '#00b0f0', '#00b0f0', '#0033cc']
-
-        for i, (cat, val, cum) in enumerate(zip(categories, values, cumulative)):
-            if i == 0:
-                ax.bar(i, val, color=colors[i], edgecolor='black', linewidth=1)
-            elif i == len(categories) - 1:
-                ax.bar(i, val, color=colors[i], edgecolor='black', linewidth=1)
-            else:
-                ax.bar(i, val, bottom=cumulative[i-1], color=colors[i], edgecolor='black', linewidth=1)
-
-        ax.set_xticks(range(len(categories)))
-        ax.set_xticklabels(categories)
-        ax.set_ylabel('Value ($M)', fontsize=12)
-        ax.set_title('Value Creation Opportunity', fontsize=14, fontweight='bold')
-        ax.grid(axis='y', alpha=0.3)
-
-        img_bytes = io.BytesIO()
-        plt.savefig(img_bytes, format='png', bbox_inches='tight', dpi=150)
-        img_bytes.seek(0)
-        plt.close()
-
+        default_data = {
+            "categories": ['Starting', 'Revenue\nGrowth', 'Cost\nReduction', 'Efficiency', 'Ending'],
+            "values": [100, 25, 15, 10, 150],
+            "title": "Value Creation Opportunity",
+            "x_label": "Value ($M)",
+        }
+        img_bytes = self._render_waterfall_chart(default_data)
         slide.shapes.add_picture(img_bytes, Inches(1.5), Inches(2), width=Inches(7))
 
     def _add_pie_chart_slide(self, prs, storyline: Storyline, research: ResearchResults):
@@ -626,39 +890,39 @@ class SlideGenerator:
             p.text = f"Additional analysis supporting hypothesis {i+1}"
             p.font.size = Pt(14)
 
-    def _add_recommendations(self, prs, storyline: Storyline):
-        """Add recommendations slide."""
+    def _add_recommendations(self, prs, storyline: Storyline, ai_image=None):
+        """Add recommendations slide with optional AI illustration on the right."""
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         self._add_slide_title(slide, "Recommendations")
 
-        content_box = slide.shapes.add_textbox(Inches(1), Inches(1.5), Inches(8), Inches(5))
+        content_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.4), Inches(5.0), Inches(5.6))
         tf = content_box.text_frame
         tf.word_wrap = True
 
-        # Answer from SCQA
         p = tf.paragraphs[0]
         p.text = "Recommended Actions"
-        p.font.size = Pt(16)
+        p.font.size = Pt(14)
         p.font.bold = True
         p.font.color.rgb = self.primary_color
 
         p = tf.add_paragraph()
         p.text = storyline.scqa.answer
-        p.font.size = Pt(12)
-        p.space_after = Pt(20)
+        p.font.size = Pt(11)
+        p.space_after = Pt(16)
 
-        # Next steps
         p = tf.add_paragraph()
         p.text = "Next Steps"
-        p.font.size = Pt(16)
+        p.font.size = Pt(14)
         p.font.bold = True
         p.font.color.rgb = self.primary_color
 
         for i in range(3):
             p = tf.add_paragraph()
             p.text = f"Action item {i+1}: Implement key recommendations"
-            p.level = 0
-            p.font.size = Pt(12)
+            p.font.size = Pt(11)
+            p.space_after = Pt(6)
+
+        self._add_ai_image_column(slide, ai_image)
 
     def _add_sources(self, prs, research: ResearchResults):
         """Add sources/references slide."""

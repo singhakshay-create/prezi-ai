@@ -1,6 +1,7 @@
 """Shared fixtures for Prezi AI backend tests."""
 
 import json
+import os
 import pytest
 from typing import List, Optional
 from unittest.mock import AsyncMock
@@ -51,6 +52,30 @@ class MockLLMProvider(LLMProvider):
         if isinstance(self.response, Exception):
             raise self.response
         return self.response
+
+    async def generate_with_vision(
+        self,
+        prompt: str,
+        image_paths,
+        system=None,
+        temperature: float = 0.3,
+        max_tokens: int = 4000,
+    ) -> str:
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "image_paths": image_paths,
+                "system": system,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+        )
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+    def supports_vision(self) -> bool:
+        return True
 
     def get_model_name(self) -> str:
         return "MockLLM"
@@ -258,3 +283,79 @@ def test_client(db_engine):
     )
     yield client
     app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# PPTX / quality feedback fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sample_pptx_path(sample_storyline, sample_research_results):
+    """Generate a short deck, yield its path, clean up afterward."""
+    import asyncio
+    from app.agents.slides import SlideGenerator
+
+    gen = SlideGenerator()
+
+    async def _make():
+        return await gen.create_presentation(
+            "Cloud Strategy", sample_storyline, sample_research_results, "short"
+        )
+
+    path = asyncio.get_event_loop().run_until_complete(_make())
+    yield path
+    if os.path.isfile(path):
+        os.remove(path)
+
+
+@pytest.fixture
+def sample_slide_quality_report_json() -> str:
+    """Valid JSON string for SlideQualityReport (as the LLM would return it)."""
+    return json.dumps({
+        "iteration": 1,
+        "information_density_score": 55,
+        "chart_quality_score": 40,
+        "narrative_flow_score": 65,
+        "storyline_suggestions": [
+            "Add quantitative benchmarks to each hypothesis",
+            "Strengthen the MECE grouping in slide 4",
+        ],
+        "issues": [
+            {
+                "slide_index": 4,
+                "issue_type": "placeholder_data",
+                "description": "Bar chart uses generic 'Factor 1-5' labels",
+                "fix_suggestion": "Replace with specific market drivers from research",
+            },
+            {
+                "slide_index": 1,
+                "issue_type": "missing_so_what",
+                "description": "Executive summary lacks a clear recommendation",
+                "fix_suggestion": "Add the governing thought as the headline finding",
+            },
+        ],
+    })
+
+
+@pytest.fixture
+def sample_slide_feedback_json() -> str:
+    """Valid JSON string for a list of SlideFeedback (as the LLM would return it)."""
+    return json.dumps([
+        {
+            "slide_index": 4,
+            "new_title": "Hybrid Cloud Adoption Grows 2x Faster Than On-Prem",
+            "new_bullets": [
+                "SOC2 certification reduces procurement cycle by 40%",
+                "Pay-as-you-go models convert 3x better than annual contracts",
+            ],
+            "new_chart_data": {
+                "chart_type": "bar",
+                "categories": ["Hybrid Cloud", "Public Cloud", "On-Premises", "Private Cloud"],
+                "values": [85, 75, 45, 60],
+                "title": "Enterprise Adoption Rate by Deployment Model (%)",
+                "x_label": "Adoption Score",
+            },
+            "issues_addressed": ["placeholder_data"],
+        }
+    ])
