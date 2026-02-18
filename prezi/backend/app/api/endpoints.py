@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from app.models import (
@@ -9,8 +9,10 @@ from app.models import (
     JobStatus,
     JobSummary,
     JobListResponse,
+    TemplateInfo,
+    TemplateListResponse,
 )
-from app.database import get_db, Job
+from app.database import get_db, Job, Template
 from app.config import settings
 from app.tasks.worker import generate_presentation_background
 import os
@@ -30,6 +32,98 @@ async def get_providers():
         llm_providers=[ProviderInfo(**p) for p in settings.available_llm_providers],
         research_providers=[ProviderInfo(**p) for p in settings.available_research_providers]
     )
+
+
+@router.get("/templates", response_model=TemplateListResponse)
+async def list_templates(db: Session = Depends(get_db)):
+    """List all available templates."""
+    templates = [
+        TemplateInfo(
+            id="default",
+            name="McKinsey Classic",
+            filename="default",
+            created_at="",
+        )
+    ]
+
+    db_templates = db.query(Template).order_by(Template.created_at.desc()).all()
+    for t in db_templates:
+        templates.append(
+            TemplateInfo(
+                id=t.id,
+                name=t.name,
+                filename=t.filename,
+                created_at=t.created_at.isoformat() if t.created_at else "",
+            )
+        )
+
+    return TemplateListResponse(templates=templates)
+
+
+@router.post("/templates/upload", response_model=TemplateInfo)
+async def upload_template(
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Upload a custom PPTX template."""
+    if not file.filename or not file.filename.endswith(".pptx"):
+        raise HTTPException(status_code=400, detail="Only .pptx files are allowed")
+
+    # Read file content
+    content = await file.read()
+
+    # Validate it's a real PPTX
+    try:
+        from pptx import Presentation as PptxPresentation
+        import io
+        PptxPresentation(io.BytesIO(content))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid PPTX file")
+
+    # Save to disk
+    template_id = str(uuid.uuid4())
+    os.makedirs("./data/templates", exist_ok=True)
+    save_path = f"./data/templates/{template_id}.pptx"
+    with open(save_path, "wb") as f:
+        f.write(content)
+
+    # Save to DB
+    template = Template(
+        id=template_id,
+        name=name,
+        filename=file.filename,
+        path=save_path,
+    )
+    db.add(template)
+    db.commit()
+
+    return TemplateInfo(
+        id=template.id,
+        name=template.name,
+        filename=template.filename,
+        created_at=template.created_at.isoformat() if template.created_at else "",
+    )
+
+
+@router.delete("/templates/{template_id}")
+async def delete_template(template_id: str, db: Session = Depends(get_db)):
+    """Delete an uploaded template."""
+    if template_id == "default":
+        raise HTTPException(status_code=400, detail="Cannot delete the default template")
+
+    template = db.query(Template).filter(Template.id == template_id).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    # Remove file from disk
+    if template.path and os.path.isfile(template.path):
+        os.remove(template.path)
+
+    db.delete(template)
+    db.commit()
+
+    return {"status": "deleted"}
 
 
 @router.get("/jobs", response_model=JobListResponse)
@@ -102,6 +196,7 @@ async def generate(
         length=request.length,
         llm_provider=request.llm_provider,
         research_provider=request.research_provider,
+        template_id=request.template_id,
         status="queued",
         progress=0,
         message="Job queued..."
@@ -116,7 +211,8 @@ async def generate(
         request.topic,
         request.length,
         request.llm_provider,
-        request.research_provider
+        request.research_provider,
+        request.template_id,
     )
 
     return GenerateResponse(job_id=job_id)
@@ -140,7 +236,8 @@ async def retry_job(job_id: str, db: Session = Depends(get_db)):
     job.completed_at = None
     db.commit()
     generate_presentation_background(
-        job_id, job.topic, job.length, job.llm_provider, job.research_provider
+        job_id, job.topic, job.length, job.llm_provider, job.research_provider,
+        job.template_id,
     )
     return GenerateResponse(job_id=job_id)
 

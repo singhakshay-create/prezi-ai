@@ -44,25 +44,40 @@ class Job(Base):
     pptx_path = Column(String, nullable=True)
     pdf_path = Column(String, nullable=True)
 
+    # Template
+    template_id = Column(String, nullable=True)
+
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
+
+
+class Template(Base):
+    """Database model for user-uploaded presentation templates."""
+    __tablename__ = "templates"
+
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    filename = Column(String, nullable=False)
+    path = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 def init_db():
     """Initialize database tables."""
     Base.metadata.create_all(bind=engine)
 
-    # Migrate: add pdf_path column if it doesn't exist
-    try:
-        with engine.connect() as conn:
-            conn.execute("SELECT pdf_path FROM jobs LIMIT 1")
-    except Exception:
+    # Migrate: add columns if they don't exist
+    for col in ["pdf_path", "template_id"]:
         try:
             with engine.connect() as conn:
-                conn.execute("ALTER TABLE jobs ADD COLUMN pdf_path TEXT")
+                conn.execute(f"SELECT {col} FROM jobs LIMIT 1")
         except Exception:
-            pass
+            try:
+                with engine.connect() as conn:
+                    conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT")
+            except Exception:
+                pass
 
 
 def get_db():

@@ -296,6 +296,101 @@ class TestPdfEndpoint:
         assert "LibreOffice" in resp.json()["detail"]
 
 
+class TestTemplateEndpoints:
+    async def test_template_list_has_default(self, test_client):
+        """GET /api/templates always includes 'default'."""
+        resp = await test_client.get("/api/templates")
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [t["id"] for t in data["templates"]]
+        assert "default" in ids
+        default = next(t for t in data["templates"] if t["id"] == "default")
+        assert default["name"] == "McKinsey Classic"
+
+    async def test_template_upload_valid(self, test_client):
+        """Upload a valid .pptx file → 200."""
+        from pptx import Presentation as PptxPresentation
+        import io
+
+        # Create a minimal valid PPTX in memory
+        prs = PptxPresentation()
+        prs.slides.add_slide(prs.slide_layouts[6])
+        buf = io.BytesIO()
+        prs.save(buf)
+        buf.seek(0)
+
+        resp = await test_client.post(
+            "/api/templates/upload",
+            files={"file": ("test_template.pptx", buf, "application/octet-stream")},
+            data={"name": "Test Template"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "Test Template"
+        assert data["filename"] == "test_template.pptx"
+        assert data["id"]
+
+    async def test_template_upload_invalid_extension(self, test_client):
+        """Upload a non-.pptx file → 400."""
+        import io
+
+        resp = await test_client.post(
+            "/api/templates/upload",
+            files={"file": ("bad.txt", io.BytesIO(b"not a pptx"), "text/plain")},
+            data={"name": "Bad File"},
+        )
+        assert resp.status_code == 400
+        assert "pptx" in resp.json()["detail"].lower()
+
+    async def test_template_delete(self, test_client):
+        """Upload then delete a template."""
+        from pptx import Presentation as PptxPresentation
+        import io
+
+        prs = PptxPresentation()
+        prs.slides.add_slide(prs.slide_layouts[6])
+        buf = io.BytesIO()
+        prs.save(buf)
+        buf.seek(0)
+
+        resp = await test_client.post(
+            "/api/templates/upload",
+            files={"file": ("del_template.pptx", buf, "application/octet-stream")},
+            data={"name": "To Delete"},
+        )
+        template_id = resp.json()["id"]
+
+        # Delete it
+        resp = await test_client.delete(f"/api/templates/{template_id}")
+        assert resp.status_code == 200
+
+        # Verify it's gone from list
+        resp = await test_client.get("/api/templates")
+        ids = [t["id"] for t in resp.json()["templates"]]
+        assert template_id not in ids
+
+    async def test_template_delete_default_blocked(self, test_client):
+        """Cannot delete the default template → 400."""
+        resp = await test_client.delete("/api/templates/default")
+        assert resp.status_code == 400
+
+    async def test_generate_accepts_template_id(self, test_client):
+        """Generate request with template_id field is accepted (validation only)."""
+        resp = await test_client.post(
+            "/api/generate",
+            json={
+                "topic": "Cloud computing strategy for enterprise clients",
+                "length": "short",
+                "llm_provider": "nonexistent_provider",
+                "research_provider": "mock",
+                "template_id": "default",
+            },
+        )
+        # 400 because LLM provider doesn't exist, but template_id is accepted
+        assert resp.status_code == 400
+        assert "LLM provider" in resp.json()["detail"]
+
+
 class TestResultEndpoint:
     async def test_result_not_found(self, test_client):
         """GET /api/result/fake → 404."""

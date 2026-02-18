@@ -15,6 +15,18 @@ export interface GenerateRequest {
   length: 'short' | 'medium' | 'long';
   llm_provider: string;
   research_provider: string;
+  template_id?: string;
+}
+
+export interface TemplateInfo {
+  id: string;
+  name: string;
+  filename: string;
+  created_at: string;
+}
+
+export interface TemplateListResponse {
+  templates: TemplateInfo[];
 }
 
 export interface GenerateResponse {

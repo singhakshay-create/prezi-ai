@@ -10,6 +10,7 @@ class GenerateRequest(BaseModel):
     length: Literal["short", "medium", "long"]
     llm_provider: str = Field(..., description="LLM provider ID")
     research_provider: str = Field(default="mock", description="Research provider ID")
+    template_id: Optional[str] = Field(default=None, description="Template ID (null for default)")
 
 
 class GenerateResponse(BaseModel):
@@ -107,6 +108,17 @@ class JobListResponse(BaseModel):
     total: int
     page: int
     per_page: int
+
+
+class TemplateInfo(BaseModel):
+    id: str
+    name: str
+    filename: str
+    created_at: str
+
+
+class TemplateListResponse(BaseModel):
+    templates: List[TemplateInfo]
 
 
 class PresentationResult(BaseModel):

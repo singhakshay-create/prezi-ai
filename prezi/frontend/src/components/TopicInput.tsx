@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { getProviders, generatePresentation } from '../services/api';
-import type { ProviderInfo } from '../types';
+import React, { useState, useEffect, useRef } from 'react';
+import { getProviders, getTemplates, uploadTemplate, generatePresentation } from '../services/api';
+import type { ProviderInfo, TemplateInfo } from '../types';
 
 interface TopicInputProps {
   onJobStart: (jobId: string) => void;
@@ -13,11 +13,16 @@ export const TopicInput: React.FC<TopicInputProps> = ({ onJobStart }) => {
   const [researchProviders, setResearchProviders] = useState<ProviderInfo[]>([]);
   const [selectedLlm, setSelectedLlm] = useState('');
   const [selectedResearch, setSelectedResearch] = useState('mock');
+  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState('default');
+  const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     loadProviders();
+    loadTemplates();
   }, []);
 
   const loadProviders = async () => {
@@ -26,13 +31,43 @@ export const TopicInput: React.FC<TopicInputProps> = ({ onJobStart }) => {
       setLlmProviders(providers.llm_providers);
       setResearchProviders(providers.research_providers);
 
-      // Select first available LLM provider
       const firstAvailable = providers.llm_providers.find(p => p.available);
       if (firstAvailable) {
         setSelectedLlm(firstAvailable.id);
       }
     } catch (err) {
       setError('Failed to load providers');
+    }
+  };
+
+  const loadTemplates = async () => {
+    try {
+      const data = await getTemplates();
+      setTemplates(data.templates);
+    } catch {
+      // Templates endpoint may not be critical; default will be used
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const name = file.name.replace('.pptx', '');
+    setUploading(true);
+    setError('');
+
+    try {
+      const template = await uploadTemplate(file, name);
+      await loadTemplates();
+      setSelectedTemplate(template.id);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to upload template');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 
@@ -58,6 +93,7 @@ export const TopicInput: React.FC<TopicInputProps> = ({ onJobStart }) => {
         length,
         llm_provider: selectedLlm,
         research_provider: selectedResearch,
+        template_id: selectedTemplate === 'default' ? undefined : selectedTemplate,
       });
 
       onJobStart(response.job_id);
@@ -116,6 +152,42 @@ export const TopicInput: React.FC<TopicInputProps> = ({ onJobStart }) => {
                 </div>
               </button>
             ))}
+          </div>
+        </div>
+
+        {/* Template Selection */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Presentation Template
+          </label>
+          <div className="flex gap-3">
+            <select
+              value={selectedTemplate}
+              onChange={(e) => setSelectedTemplate(e.target.value)}
+              disabled={loading}
+              className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-mckinsey-blue focus:border-transparent"
+            >
+              {templates.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pptx"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={loading || uploading}
+              className="px-4 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium transition-colors whitespace-nowrap disabled:opacity-50"
+            >
+              {uploading ? 'Uploading...' : 'Upload Custom'}
+            </button>
           </div>
         </div>
 

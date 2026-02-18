@@ -8,8 +8,9 @@ from app.agents.storyline import StorylineGenerator
 from app.agents.research import ResearchEngine
 from app.agents.slides import SlideGenerator
 from app.agents.quality import QualityChecker
-from app.database import SessionLocal, Job
+from app.database import SessionLocal, Job, Template
 from app.ws.manager import notify_progress
+from typing import Optional
 from datetime import datetime
 
 
@@ -18,12 +19,13 @@ def generate_presentation_background(
     topic: str,
     length: str,
     llm_provider: str,
-    research_provider: str
+    research_provider: str,
+    template_id: Optional[str] = None,
 ):
     """Run presentation generation in a background thread."""
     thread = threading.Thread(
         target=_run_generation,
-        args=(job_id, topic, length, llm_provider, research_provider),
+        args=(job_id, topic, length, llm_provider, research_provider, template_id),
         daemon=True
     )
     thread.start()
@@ -34,14 +36,15 @@ def _run_generation(
     topic: str,
     length: str,
     llm_provider: str,
-    research_provider: str
+    research_provider: str,
+    template_id: Optional[str] = None,
 ):
     """Execute the generation pipeline synchronously in a thread."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(
-            _async_generate(job_id, topic, length, llm_provider, research_provider)
+            _async_generate(job_id, topic, length, llm_provider, research_provider, template_id)
         )
     finally:
         loop.close()
@@ -52,7 +55,8 @@ async def _async_generate(
     topic: str,
     length: str,
     llm_provider: str,
-    research_provider: str
+    research_provider: str,
+    template_id: Optional[str] = None,
 ):
     """Async presentation generation pipeline."""
     db = SessionLocal()
@@ -115,7 +119,14 @@ async def _async_generate(
         db.commit()
         _notify()
 
-        slides_agent = SlideGenerator()
+        # Look up template path
+        template_path = None
+        if template_id and template_id != "default":
+            template = db.query(Template).filter(Template.id == template_id).first()
+            if template:
+                template_path = template.path
+
+        slides_agent = SlideGenerator(template_path=template_path)
         pptx_path = await slides_agent.create_presentation(
             topic, storyline, research, length
         )

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { ProvidersResponse, GenerateRequest, GenerateResponse, JobStatus, JobResult, JobListResponse } from '../types';
+import type { ProvidersResponse, GenerateRequest, GenerateResponse, JobStatus, JobResult, JobListResponse, TemplateListResponse, TemplateInfo } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -52,4 +52,23 @@ export const getWebSocketUrl = (jobId: string): string => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = new URL(API_BASE_URL);
   return `${protocol}//${url.host}/ws/progress/${jobId}`;
+};
+
+export const getTemplates = async (): Promise<TemplateListResponse> => {
+  const response = await api.get<TemplateListResponse>('/templates');
+  return response.data;
+};
+
+export const uploadTemplate = async (file: File, name: string): Promise<TemplateInfo> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('name', name);
+  const response = await api.post<TemplateInfo>('/templates/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return response.data;
+};
+
+export const deleteTemplate = async (templateId: string): Promise<void> => {
+  await api.delete(`/templates/${templateId}`);
 };

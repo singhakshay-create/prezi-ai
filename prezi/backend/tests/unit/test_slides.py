@@ -25,26 +25,26 @@ class TestSlideGenerator:
             os.remove(path)
 
     async def test_medium_slide_count(self, sample_storyline, sample_research_results):
-        """Medium deck: short (6) + bar chart + waterfall = 8."""
+        """Medium deck: short (6) + bar + waterfall + pie + tornado = 10."""
         gen = SlideGenerator()
         path = await gen.create_presentation(
             "Cloud Strategy", sample_storyline, sample_research_results, "medium"
         )
         try:
             prs = Presentation(path)
-            assert len(prs.slides) == 8
+            assert len(prs.slides) == 10
         finally:
             os.remove(path)
 
     async def test_long_slide_count(self, sample_storyline, sample_research_results):
-        """Long deck: medium (8) + 2 additional analysis slides = 10."""
+        """Long deck: medium (10) + marimekko + BCG + priority + value chain + heatmap = 15."""
         gen = SlideGenerator()
         path = await gen.create_presentation(
             "Cloud Strategy", sample_storyline, sample_research_results, "long"
         )
         try:
             prs = Presentation(path)
-            assert len(prs.slides) == 10
+            assert len(prs.slides) == 15
         finally:
             os.remove(path)
 
@@ -137,3 +137,79 @@ class TestSlideGenerator:
             assert os.path.isfile(path)
         finally:
             os.remove(path)
+
+    async def test_medium_has_chart_images(self, sample_storyline, sample_research_results):
+        """Medium deck has 4 chart image shapes (bar, waterfall, pie, tornado)."""
+        gen = SlideGenerator()
+        path = await gen.create_presentation(
+            "Cloud Strategy", sample_storyline, sample_research_results, "medium"
+        )
+        try:
+            prs = Presentation(path)
+            picture_count = sum(
+                1 for slide in prs.slides for shape in slide.shapes
+                if shape.shape_type == 13  # MSO_SHAPE_TYPE.PICTURE
+            )
+            assert picture_count == 4
+        finally:
+            os.remove(path)
+
+    async def test_long_has_framework_slides(self, sample_storyline, sample_research_results):
+        """Long deck has 8 chart images: bar, waterfall, pie, tornado, marimekko, BCG, priority, heatmap.
+        Value chain uses native PPTX shapes and contributes 0 pictures."""
+        gen = SlideGenerator()
+        path = await gen.create_presentation(
+            "Cloud Strategy", sample_storyline, sample_research_results, "long"
+        )
+        try:
+            prs = Presentation(path)
+            picture_count = sum(
+                1 for slide in prs.slides for shape in slide.shapes
+                if shape.shape_type == 13  # MSO_SHAPE_TYPE.PICTURE
+            )
+            assert picture_count == 8
+        finally:
+            os.remove(path)
+
+    async def test_value_chain_has_native_shapes(self, sample_storyline, sample_research_results):
+        """Value chain slide uses native PPTX rectangles, no embedded images.
+        Slide order (long): 0=title 1=exec 2=situation 3=hypotheses 4=bar 5=waterfall
+        6=pie 7=tornado 8=marimekko 9=BCG 10=priority 11=value-chain 12=heatmap 13=recs 14=sources"""
+        gen = SlideGenerator()
+        path = await gen.create_presentation(
+            "Cloud Strategy", sample_storyline, sample_research_results, "long"
+        )
+        try:
+            prs = Presentation(path)
+            assert len(prs.slides) == 15
+            value_chain_slide = prs.slides[11]
+            pictures = [s for s in value_chain_slide.shapes if s.shape_type == 13]
+            rectangles = [s for s in value_chain_slide.shapes if s.shape_type == 1]
+            assert len(pictures) == 0
+            assert len(rectangles) >= 9  # 5 primary + 4 support activity boxes
+        finally:
+            os.remove(path)
+
+    async def test_slides_with_template_path(self, sample_storyline, sample_research_results):
+        """SlideGenerator with a template_path produces a valid PPTX."""
+        # Create a minimal template
+        template_prs = Presentation()
+        template_prs.slide_width = Inches(10)
+        template_prs.slide_height = Inches(7.5)
+        os.makedirs("./data/templates", exist_ok=True)
+        template_path = "./data/templates/test_template.pptx"
+        template_prs.save(template_path)
+
+        try:
+            gen = SlideGenerator(template_path=template_path)
+            path = await gen.create_presentation(
+                "Cloud Strategy", sample_storyline, sample_research_results, "short"
+            )
+            try:
+                prs = Presentation(path)
+                assert prs is not None
+                assert len(prs.slides) == 6
+            finally:
+                os.remove(path)
+        finally:
+            os.remove(template_path)
