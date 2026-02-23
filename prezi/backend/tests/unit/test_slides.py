@@ -5,8 +5,8 @@ import pytest
 from pptx import Presentation
 from pptx.util import Inches
 
-from app.agents.slides import SlideGenerator
-from app.models import Storyline, ResearchResults
+from app.agents.slides import SlideGenerator, LAYOUT_REGISTRY
+from app.models import Storyline, ResearchResults, Hypothesis, SCQAFramework, HypothesisEvidence, SearchResult
 
 
 class TestSlideGenerator:
@@ -455,5 +455,277 @@ class TestSlideGenerator:
             texts = [s.text_frame.text for s in slide.shapes if s.has_text_frame]
             combined = " ".join(texts)
             assert sample_storyline.slide_data["bar_chart"]["action_title"] in combined
+        finally:
+            os.remove(path)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_hypothesis(chart_type: str, hyp_id: int = 1) -> Hypothesis:
+    return Hypothesis(
+        id=hyp_id,
+        text=f"Hypothesis {hyp_id}",
+        testable_claim=f"Claim {hyp_id}",
+        action_title=f"Action title for hypothesis {hyp_id}",
+        chart_hint={
+            "type": chart_type,
+            "categories": ["Phase 1", "Phase 2", "Phase 3"],
+            "values": [10, 25, 40],
+            "metric": "Score",
+        },
+    )
+
+
+def _empty_research() -> ResearchResults:
+    return ResearchResults(hypotheses_evidence=[], total_sources=0)
+
+
+def _single_hyp_storyline(chart_type: str) -> Storyline:
+    return Storyline(
+        scqa=SCQAFramework(
+            situation="Market growing rapidly.",
+            complication="Competitors are catching up.",
+            question="How do we maintain our lead?",
+            answer="Three strategic actions.",
+            situation_title="Market grows 25% CAGR",
+            complication_title="Competitive intensity rising",
+        ),
+        governing_thought="Act decisively in next 12 months.",
+        key_line="Three pillars drive sustainable advantage.",
+        hypotheses=[_make_hypothesis(chart_type)],
+        recommendation_items=["Action 1: do X", "Action 2: do Y"],
+        slide_data={},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Layout registry
+# ---------------------------------------------------------------------------
+
+class TestLayoutRegistry:
+
+    def test_registry_has_expected_types(self):
+        for t in ["bar", "waterfall", "pie", "tornado", "timeline", "three_kpi", "two_column", "default"]:
+            assert t in LAYOUT_REGISTRY
+
+    def test_bar_maps_to_chart_evidence(self):
+        assert LAYOUT_REGISTRY["bar"] == "chart_evidence"
+
+    def test_timeline_maps_to_timeline(self):
+        assert LAYOUT_REGISTRY["timeline"] == "timeline"
+
+    def test_three_kpi_maps_to_three_kpi(self):
+        assert LAYOUT_REGISTRY["three_kpi"] == "three_kpi"
+
+    def test_two_column_maps_to_two_column(self):
+        assert LAYOUT_REGISTRY["two_column"] == "two_column"
+
+
+# ---------------------------------------------------------------------------
+# New layout slides
+# ---------------------------------------------------------------------------
+
+class TestNewLayouts:
+
+    async def test_timeline_slide_produces_valid_pptx(self):
+        """A hypothesis with chart_hint.type='timeline' generates a valid PPTX."""
+        gen = SlideGenerator()
+        storyline = _single_hyp_storyline("timeline")
+        path = await gen.create_presentation("Cloud Roadmap", storyline, _empty_research(), "short")
+        try:
+            prs = Presentation(path)
+            assert len(prs.slides) >= 1
+        finally:
+            os.remove(path)
+
+    async def test_three_kpi_slide_produces_valid_pptx(self):
+        """A hypothesis with chart_hint.type='three_kpi' generates a valid PPTX."""
+        gen = SlideGenerator()
+        storyline = _single_hyp_storyline("three_kpi")
+        path = await gen.create_presentation("KPI Overview", storyline, _empty_research(), "short")
+        try:
+            prs = Presentation(path)
+            assert len(prs.slides) >= 1
+        finally:
+            os.remove(path)
+
+    async def test_two_column_slide_produces_valid_pptx(self):
+        """A hypothesis with chart_hint.type='two_column' generates a valid PPTX."""
+        gen = SlideGenerator()
+        storyline = _single_hyp_storyline("two_column")
+        path = await gen.create_presentation("Analysis", storyline, _empty_research(), "short")
+        try:
+            prs = Presentation(path)
+            assert len(prs.slides) >= 1
+        finally:
+            os.remove(path)
+
+    async def test_timeline_slide_uses_action_title(self):
+        """Timeline slide title contains the hypothesis action_title."""
+        gen = SlideGenerator()
+        storyline = _single_hyp_storyline("timeline")
+        path = await gen.create_presentation("Cloud Roadmap", storyline, _empty_research(), "short")
+        try:
+            prs = Presentation(path)
+            # Slide 3 is the hypothesis slide (0=title, 1=situation, 2=complication)
+            slide = prs.slides[3]
+            texts = " ".join(s.text_frame.text for s in slide.shapes if s.has_text_frame)
+            assert "Action title for hypothesis 1" in texts
+        finally:
+            os.remove(path)
+
+    async def test_three_kpi_shows_categories(self):
+        """Three KPI slide contains category labels from chart_hint."""
+        gen = SlideGenerator()
+        storyline = _single_hyp_storyline("three_kpi")
+        path = await gen.create_presentation("KPIs", storyline, _empty_research(), "short")
+        try:
+            prs = Presentation(path)
+            slide = prs.slides[3]
+            texts = " ".join(s.text_frame.text for s in slide.shapes if s.has_text_frame)
+            assert "Phase 1" in texts
+        finally:
+            os.remove(path)
+
+    async def test_unknown_chart_type_falls_back_to_bar(self):
+        """Unrecognised chart_hint.type falls back to chart_evidence layout (bar chart)."""
+        gen = SlideGenerator()
+        storyline = _single_hyp_storyline("marimekko_custom")  # not in registry
+        path = await gen.create_presentation("Analysis", storyline, _empty_research(), "short")
+        try:
+            prs = Presentation(path)
+            slide = prs.slides[3]
+            # Fallback: bar chart present (native chart shape type 3)
+            charts = [s for s in slide.shapes if s.shape_type == 3]
+            assert len(charts) >= 1
+        finally:
+            os.remove(path)
+
+    async def test_timeline_with_evidence(self):
+        """Timeline slide renders correctly when evidence is provided."""
+        gen = SlideGenerator()
+        storyline = _single_hyp_storyline("timeline")
+        evidence = ResearchResults(
+            hypotheses_evidence=[
+                HypothesisEvidence(
+                    hypothesis_id=1,
+                    evidence=[
+                        SearchResult(source="IDC", url="https://idc.com", snippet="Phase 1 launched in 2022.", relevance_score=0.9),
+                        SearchResult(source="Gartner", url="https://gartner.com", snippet="Phase 2 grew 30%.", relevance_score=0.8),
+                    ],
+                    supports=True,
+                    confidence="high",
+                    conclusion="Supported",
+                )
+            ],
+            total_sources=2,
+        )
+        path = await gen.create_presentation("Roadmap", storyline, evidence, "short")
+        try:
+            prs = Presentation(path)
+            assert len(prs.slides) >= 4
+        finally:
+            os.remove(path)
+
+
+# ---------------------------------------------------------------------------
+# Markdown stripping
+# ---------------------------------------------------------------------------
+
+class TestMarkdownStripping:
+
+    def test_strip_markdown_removes_bold(self):
+        gen = SlideGenerator()
+        assert gen._strip_markdown("**Market** grows 20%") == "Market grows 20%"
+
+    def test_strip_markdown_removes_italic(self):
+        gen = SlideGenerator()
+        assert gen._strip_markdown("*important* finding") == "important finding"
+
+    def test_strip_markdown_removes_links(self):
+        gen = SlideGenerator()
+        assert gen._strip_markdown("[Gartner](https://gartner.com)") == "Gartner"
+
+    def test_strip_markdown_no_op_on_plain_text(self):
+        gen = SlideGenerator()
+        assert gen._strip_markdown("Plain text unchanged") == "Plain text unchanged"
+
+    def test_insight_sidebar_strips_markdown(self):
+        """_add_insight_sidebar strips **bold** from bullet text."""
+        from pptx import Presentation as Prs
+        gen = SlideGenerator()
+        prs = Prs()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        gen._add_insight_sidebar(
+            slide,
+            headline="Test",
+            bullets=["**Revenue** grew **35%** YoY", "Plain bullet"],
+        )
+        # Collect all text from the slide
+        all_text = " ".join(s.text_frame.text for s in slide.shapes if s.has_text_frame)
+        assert "**" not in all_text
+
+    async def test_recommendations_strip_markdown(self, sample_storyline, sample_research_results):
+        """Recommendation items have ** stripped in the output PPTX."""
+        gen = SlideGenerator()
+        # Inject bold markers into recs
+        sample_storyline.recommendation_items = [
+            "**Launch** hybrid cloud pilot by **Q2 2025**",
+            "Achieve **SOC2** certification",
+        ]
+        path = await gen.create_presentation(
+            "Cloud Strategy", sample_storyline, sample_research_results, "short"
+        )
+        try:
+            prs = Presentation(path)
+            # Recs slide is second-to-last
+            recs_slide = prs.slides[-2]
+            texts = " ".join(s.text_frame.text for s in recs_slide.shapes if s.has_text_frame)
+            assert "**" not in texts
+        finally:
+            os.remove(path)
+
+
+# ---------------------------------------------------------------------------
+# Dynamic chart slides
+# ---------------------------------------------------------------------------
+
+class TestDynamicChartSlides:
+
+    async def test_medium_only_adds_slides_for_available_slide_data(self):
+        """Medium deck with only bar_chart in slide_data adds just 1 extra chart slide."""
+        gen = SlideGenerator()
+        storyline = _single_hyp_storyline("bar")
+        storyline.slide_data = {
+            "bar_chart": {
+                "action_title": "Cloud leads at 72%",
+                "categories": ["Cloud", "On-prem"],
+                "values": [72, 28],
+                "metric": "Share (%)"
+            }
+            # No waterfall, pie, tornado
+        }
+        path = await gen.create_presentation("Cloud", storyline, _empty_research(), "medium")
+        try:
+            prs = Presentation(path)
+            # title(1) + situation(1) + complication(1) + 1 hypothesis + 1 bar chart + recs(1) + sources(1) = 7
+            assert len(prs.slides) == 7
+        finally:
+            os.remove(path)
+
+    async def test_medium_all_four_chart_types_produces_correct_count(
+        self, sample_storyline, sample_research_results
+    ):
+        """Medium deck with all 4 chart types adds 4 extra chart slides (default fixture)."""
+        gen = SlideGenerator()
+        path = await gen.create_presentation(
+            "Cloud Strategy", sample_storyline, sample_research_results, "medium"
+        )
+        try:
+            prs = Presentation(path)
+            # title + sit + comp + 3 hyp + bar + waterfall + pie + tornado + recs + sources = 12
+            assert len(prs.slides) == 12
         finally:
             os.remove(path)
