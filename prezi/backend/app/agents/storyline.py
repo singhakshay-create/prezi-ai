@@ -134,11 +134,12 @@ Return ONLY valid JSON in this exact format:
   }}
 }}"""
 
+        max_tokens = {"short": 20000, "medium": 30000, "long": 40000}[length]
         response = await self.llm.generate(
             prompt=user_prompt,
             system=system_prompt,
             temperature=0.7,
-            max_tokens=2000
+            max_tokens=max_tokens
         )
 
         # Parse JSON response
