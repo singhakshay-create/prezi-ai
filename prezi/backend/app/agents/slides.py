@@ -52,11 +52,29 @@ def _coerce_str(v) -> str:
     return str(v)
 
 
+
+# ---------------------------------------------------------------------------
+# Slide layout registry — maps chart_hint.type → layout name
+# ---------------------------------------------------------------------------
+LAYOUT_REGISTRY = {
+    "bar":          "chart_evidence",    # horizontal bar + evidence column
+    "horizontal_bar": "chart_evidence",
+    "waterfall":    "waterfall_sidebar", # waterfall chart + insight sidebar
+    "pie":          "pie_sidebar",       # native pie chart + insight sidebar
+    "tornado":      "tornado_sidebar",   # butterfly bar chart + insight sidebar
+    "timeline":     "timeline",          # horizontal milestone timeline
+    "three_kpi":    "three_kpi",         # three large KPI metric boxes
+    "two_column":   "two_column",        # two equal bullet columns
+    "default":      "chart_evidence",
+}
+
+
 class SlideGenerator:
     """Generates consulting-style presentations using python-pptx."""
 
-    def __init__(self, template_path: str = None):
+    def __init__(self, template_path: str = None, image_gen=None):
         self.template_path = template_path
+        self.image_gen = image_gen  # Optional ImageGenerator for AI illustrations
         # McKinsey colors
         self.primary_color = RGBColor(0, 51, 153)  # McKinsey blue
         self.accent_color = RGBColor(0, 176, 240)  # Light blue
@@ -79,8 +97,20 @@ class SlideGenerator:
         prs.slide_width = Inches(13.333)
         prs.slide_height = Inches(7.5)
 
+        # Optionally generate AI background for title slide
+        ai_title_bg = None
+        if self.image_gen and self.image_gen.available:
+            try:
+                prompt = (
+                    f"Abstract professional background for a business presentation about: {topic}. "
+                    "Dark navy blue tones, subtle geometric patterns, corporate aesthetic."
+                )
+                ai_title_bg = await self.image_gen.generate_image(prompt)
+            except Exception:
+                ai_title_bg = None
+
         # Short base: title + situation + complication + one slide per hypothesis
-        self._add_title_slide(prs, topic, storyline)
+        self._add_title_slide(prs, topic, storyline, ai_title_bg)
         self._add_situation_slide(prs, storyline)
         self._add_complication_slide(prs, storyline)
         for hyp in storyline.hypotheses:
@@ -88,16 +118,13 @@ class SlideGenerator:
                 (e for e in research.hypotheses_evidence if e.hypothesis_id == hyp.id),
                 None
             )
-            self._add_hypothesis_slide(prs, hyp, evidence)
+            self._add_hypothesis_slide_dynamic(prs, hyp, evidence)
 
-        # Medium: add 4 standalone chart slides
+        # Medium: add dynamic chart slides based on what slide_data contains
         if length in ["medium", "long"]:
-            self._add_bar_chart_slide(prs, storyline, research)
-            self._add_waterfall_slide(prs, storyline)
-            self._add_pie_chart_slide(prs, storyline, research)
-            self._add_tornado_chart_slide(prs, storyline, research)
+            self._add_dynamic_chart_slides(prs, storyline, research)
 
-        # Long: add 5 framework slides
+        # Long: add framework slides
         if length == "long":
             self._add_marimekko_chart_slide(prs, storyline, research)
             self._add_bcg_matrix_slide(prs, storyline, research)
@@ -238,7 +265,7 @@ class SlideGenerator:
         tf.word_wrap = True
         for i, b in enumerate(bullets):
             p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-            p.text = f"\u25b6 {b}"     # ▶ triangle bullet
+            p.text = f"\u25b6 {self._strip_markdown(b)}"     # ▶ triangle bullet
             p.font.size = Pt(10)
             p.font.color.rgb = RGBColor(30, 30, 30)
             if i > 0:
@@ -270,8 +297,8 @@ class SlideGenerator:
     # Title slide
     # ------------------------------------------------------------------
 
-    def _add_title_slide(self, prs, topic: str, storyline: Storyline):
-        """Full-width dark navy title slide."""
+    def _add_title_slide(self, prs, topic: str, storyline: Storyline, ai_bg: Optional[io.BytesIO] = None):
+        """Full-width dark navy title slide, with optional AI-generated background image."""
         slide = prs.slides.add_slide(prs.slide_layouts[6])
 
         # Full-slide dark background
@@ -279,6 +306,38 @@ class SlideGenerator:
         bg.fill.solid()
         bg.fill.fore_color.rgb = RGBColor(0, 31, 96)
         bg.line.fill.background()
+
+        # Optional AI background image (semi-transparent overlay approach)
+        if ai_bg:
+            try:
+                pic = slide.shapes.add_picture(ai_bg, Inches(0), Inches(0),
+                                                Inches(13.333), Inches(7.5))
+                # Push picture behind the text shapes (set transparency via solid overlay)
+                pic.element.getparent().remove(pic.element)
+                slide.shapes._spTree.insert(2, pic.element)
+                # Add dark overlay to keep text readable
+                overlay = slide.shapes.add_shape(1, 0, 0, Inches(13.333), Inches(7.5))
+                overlay.fill.solid()
+                overlay.fill.fore_color.rgb = RGBColor(0, 31, 96)
+                overlay.line.fill.background()
+                from pptx.util import Pt as _Pt
+                from lxml import etree as _etree
+                sp_elem = overlay.element
+                spPr = sp_elem.find('.//{http://schemas.openxmlformats.org/drawingml/2006/main}spPr')
+                if spPr is not None:
+                    solidFill = spPr.find('{http://schemas.openxmlformats.org/drawingml/2006/main}solidFill')
+                    if solidFill is not None:
+                        srgb = solidFill.find('{http://schemas.openxmlformats.org/drawingml/2006/main}srgbClr')
+                        if srgb is None:
+                            srgb = solidFill.find('{http://schemas.openxmlformats.org/drawingml/2006/main}schemeClr')
+                        if srgb is not None:
+                            alpha_elem = _etree.SubElement(
+                                srgb,
+                                '{http://schemas.openxmlformats.org/drawingml/2006/main}alpha',
+                                val="80000"   # ~80% opacity → let background show through at 20%
+                            )
+            except Exception:
+                pass  # AI image optional — don't fail the whole slide
 
         # Thin accent line — full widescreen width
         accent = slide.shapes.add_shape(1, 0, Inches(2.3), Inches(13.333), Inches(0.04))
@@ -522,6 +581,316 @@ class SlideGenerator:
             return []
         sorted_ev = sorted(evidence.evidence, key=lambda e: e.relevance_score, reverse=True)
         return [(e.snippet[:120], e.source[:50]) for e in sorted_ev[:n]]
+
+    # ------------------------------------------------------------------
+    # Dynamic hypothesis slide dispatcher
+    # ------------------------------------------------------------------
+
+    def _add_hypothesis_slide_dynamic(self, prs, hypothesis: Hypothesis, evidence):
+        """Dispatch to the correct slide layout based on chart_hint.type."""
+        chart_type = "bar"
+        if hypothesis.chart_hint and isinstance(hypothesis.chart_hint, dict):
+            chart_type = hypothesis.chart_hint.get("type", "bar").lower()
+
+        layout = LAYOUT_REGISTRY.get(chart_type, LAYOUT_REGISTRY["default"])
+
+        if layout == "timeline":
+            self._add_timeline_slide(prs, hypothesis, evidence)
+        elif layout == "three_kpi":
+            self._add_three_kpi_slide(prs, hypothesis, evidence)
+        elif layout == "two_column":
+            self._add_two_column_slide(prs, hypothesis, evidence)
+        else:
+            # Default: chart left + evidence right
+            self._add_hypothesis_slide(prs, hypothesis, evidence)
+
+    # ------------------------------------------------------------------
+    # New layout: Timeline
+    # ------------------------------------------------------------------
+
+    def _add_timeline_slide(self, prs, hypothesis: Hypothesis, evidence):
+        """Horizontal milestone timeline slide derived from chart_hint categories/values."""
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        self._add_slide_title(slide, hypothesis.action_title or hypothesis.text)
+
+        hint = hypothesis.chart_hint or {}
+        milestones = hint.get("categories", ["Phase 1", "Phase 2", "Phase 3", "Phase 4", "Phase 5"])
+        values = [_coerce_float(v) for v in hint.get("values", [0] * len(milestones))]
+        n = min(len(milestones), len(values), 7)
+        milestones = [_coerce_str(m) for m in milestones[:n]]
+
+        # Timeline spine
+        spine_y = Inches(3.0)
+        spine = slide.shapes.add_shape(1, Inches(0.6), spine_y, Inches(12.3), Inches(0.06))
+        spine.fill.solid()
+        spine.fill.fore_color.rgb = RGBColor(0, 51, 153)
+        spine.line.fill.background()
+
+        # Arrow head at right end
+        arr = slide.shapes.add_shape(5, Inches(12.5), spine_y - Inches(0.12),
+                                      Inches(0.3), Inches(0.3))
+        arr.fill.solid()
+        arr.fill.fore_color.rgb = RGBColor(0, 51, 153)
+        arr.line.fill.background()
+
+        col_w = Inches(12.3 / n)
+        for i, milestone in enumerate(milestones):
+            x = Inches(0.6) + i * col_w + col_w / 2
+
+            # Dot on spine
+            dot = slide.shapes.add_shape(9, x - Inches(0.15), spine_y - Inches(0.12),
+                                          Inches(0.3), Inches(0.3))
+            dot.fill.solid()
+            dot.fill.fore_color.rgb = RGBColor(0, 176, 240) if i < n - 1 else RGBColor(0, 51, 153)
+            dot.line.fill.background()
+
+            # Label above (odd) or below (even) for staggered layout
+            lbl_y = Inches(1.6) if i % 2 == 0 else Inches(3.5)
+            lbl = slide.shapes.add_textbox(x - col_w / 2, lbl_y, col_w, Inches(1.2))
+            tf = lbl.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.text = self._strip_markdown(milestone)
+            p.font.size = Pt(10)
+            p.font.bold = True
+            p.font.color.rgb = RGBColor(0, 51, 153)
+            p.alignment = PP_ALIGN.CENTER
+
+            # Value label if present
+            if values[i] != 0:
+                val_lbl = slide.shapes.add_textbox(x - col_w / 2,
+                                                    lbl_y + Inches(0.5), col_w, Inches(0.4))
+                vp = val_lbl.text_frame.paragraphs[0]
+                vp.text = f"{values[i]:.0f}"
+                vp.font.size = Pt(14)
+                vp.font.bold = True
+                vp.font.color.rgb = RGBColor(0, 176, 240)
+                vp.alignment = PP_ALIGN.CENTER
+
+            # Connector line from dot to label
+            conn_top = min(spine_y, lbl_y + Inches(1.2))
+            conn_bot = max(spine_y, lbl_y)
+            conn = slide.shapes.add_shape(1, x - Inches(0.01),
+                                           conn_top, Inches(0.02),
+                                           conn_bot - conn_top)
+            conn.fill.solid()
+            conn.fill.fore_color.rgb = RGBColor(200, 200, 200)
+            conn.line.fill.background()
+
+        # Add evidence as brief footer bullets
+        ev_bullets = self._get_evidence_bullets(evidence, 2)
+        if ev_bullets:
+            ev_box = slide.shapes.add_textbox(Inches(0.6), Inches(4.8),
+                                               Inches(12.3), Inches(2.1))
+            tf = ev_box.text_frame
+            tf.word_wrap = True
+            for j, (snippet, source) in enumerate(ev_bullets):
+                p = tf.paragraphs[0] if j == 0 else tf.add_paragraph()
+                p.text = f"▶ {self._strip_markdown(snippet[:100])}"
+                p.font.size = Pt(10)
+                if j > 0:
+                    p.space_before = Pt(8)
+
+        self._add_footer(slide)
+
+    # ------------------------------------------------------------------
+    # New layout: Three KPI Boxes
+    # ------------------------------------------------------------------
+
+    def _add_three_kpi_slide(self, prs, hypothesis: Hypothesis, evidence):
+        """Three large KPI metric boxes across the slide width."""
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        self._add_slide_title(slide, hypothesis.action_title or hypothesis.text)
+
+        hint = hypothesis.chart_hint or {}
+        cats = hint.get("categories", ["Metric 1", "Metric 2", "Metric 3"])
+        vals = hint.get("values", [0, 0, 0])
+        metric = hint.get("metric", "")
+        n = min(len(cats), len(vals), 3)
+
+        box_w = Inches(3.7)
+        gap = Inches(0.5)
+        start_x = Inches(0.75)
+        box_top = Inches(1.3)
+        box_h = Inches(3.5)
+
+        kpi_colors = [RGBColor(0, 51, 153), RGBColor(0, 102, 204), RGBColor(0, 176, 240)]
+
+        for i in range(n):
+            bx = start_x + i * (box_w + gap)
+
+            # KPI box background
+            box = slide.shapes.add_shape(1, bx, box_top, box_w, box_h)
+            box.fill.solid()
+            box.fill.fore_color.rgb = RGBColor(235, 241, 255)
+            box.line.color.rgb = kpi_colors[i]
+            box.line.width = Pt(2)
+
+            # Top color bar
+            top_bar = slide.shapes.add_shape(1, bx, box_top, box_w, Inches(0.12))
+            top_bar.fill.solid()
+            top_bar.fill.fore_color.rgb = kpi_colors[i]
+            top_bar.line.fill.background()
+
+            # Category label
+            cat_box = slide.shapes.add_textbox(
+                bx + Inches(0.2), box_top + Inches(0.22), box_w - Inches(0.4), Inches(0.5))
+            cp = cat_box.text_frame.paragraphs[0]
+            cp.text = self._strip_markdown(_coerce_str(cats[i]))
+            cp.font.size = Pt(11)
+            cp.font.bold = True
+            cp.font.color.rgb = RGBColor(60, 60, 60)
+            cp.alignment = PP_ALIGN.CENTER
+
+            # Large metric value
+            val_box = slide.shapes.add_textbox(
+                bx + Inches(0.2), box_top + Inches(0.85), box_w - Inches(0.4), Inches(1.2))
+            vp = val_box.text_frame.paragraphs[0]
+            vp.text = f"{_coerce_float(vals[i]):.0f}"
+            vp.font.size = Pt(48)
+            vp.font.bold = True
+            vp.font.color.rgb = kpi_colors[i]
+            vp.alignment = PP_ALIGN.CENTER
+
+            # Metric unit label
+            unit_box = slide.shapes.add_textbox(
+                bx + Inches(0.2), box_top + Inches(2.0), box_w - Inches(0.4), Inches(0.4))
+            up = unit_box.text_frame.paragraphs[0]
+            up.text = self._strip_markdown(metric)
+            up.font.size = Pt(9)
+            up.font.color.rgb = RGBColor(120, 120, 120)
+            up.alignment = PP_ALIGN.CENTER
+
+        # Evidence bullets below KPI boxes
+        ev_bullets = self._get_evidence_bullets(evidence, 3)
+        if ev_bullets:
+            ev_box = slide.shapes.add_textbox(Inches(0.6), Inches(5.0),
+                                               Inches(12.3), Inches(1.9))
+            tf = ev_box.text_frame
+            tf.word_wrap = True
+            for j, (snippet, source) in enumerate(ev_bullets):
+                p = tf.paragraphs[0] if j == 0 else tf.add_paragraph()
+                p.text = f"▶ {self._strip_markdown(snippet[:100])}  [{source}]"
+                p.font.size = Pt(10)
+                if j > 0:
+                    p.space_before = Pt(6)
+
+        self._add_footer(slide)
+
+    # ------------------------------------------------------------------
+    # New layout: Two Column Bullets
+    # ------------------------------------------------------------------
+
+    def _add_two_column_slide(self, prs, hypothesis: Hypothesis, evidence):
+        """Two equal columns of bullet points — left: findings, right: evidence."""
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        self._add_slide_title(slide, hypothesis.action_title or hypothesis.text)
+
+        # Left column background (light blue)
+        left_bg = slide.shapes.add_shape(1, Inches(0.3), Inches(1.1),
+                                          Inches(6.0), Inches(6.0))
+        left_bg.fill.solid()
+        left_bg.fill.fore_color.rgb = RGBColor(235, 241, 255)
+        left_bg.line.color.rgb = RGBColor(0, 51, 153)
+        left_bg.line.width = Pt(0.75)
+
+        # Right column background (cream)
+        right_bg = slide.shapes.add_shape(1, Inches(6.5), Inches(1.1),
+                                           Inches(6.5), Inches(6.0))
+        right_bg.fill.solid()
+        right_bg.fill.fore_color.rgb = RGBColor(255, 250, 240)
+        right_bg.line.color.rgb = RGBColor(0, 176, 240)
+        right_bg.line.width = Pt(0.75)
+
+        # Left header
+        lh = slide.shapes.add_textbox(Inches(0.5), Inches(1.15), Inches(5.6), Inches(0.35))
+        lhp = lh.text_frame.paragraphs[0]
+        lhp.text = "KEY FINDINGS"
+        lhp.font.size = Pt(9)
+        lhp.font.bold = True
+        lhp.font.color.rgb = RGBColor(0, 51, 153)
+
+        # Right header
+        rh = slide.shapes.add_textbox(Inches(6.7), Inches(1.15), Inches(6.1), Inches(0.35))
+        rhp = rh.text_frame.paragraphs[0]
+        rhp.text = "EVIDENCE"
+        rhp.font.size = Pt(9)
+        rhp.font.bold = True
+        rhp.font.color.rgb = RGBColor(0, 176, 240)
+
+        # Left column: hypothesis text + chart hint categories as bullets
+        left_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.6), Inches(5.6), Inches(5.2))
+        ltf = left_box.text_frame
+        ltf.word_wrap = True
+
+        hint = hypothesis.chart_hint or {}
+        cats = hint.get("categories", [])
+        vals = hint.get("values", [])
+        metric = hint.get("metric", "")
+
+        # Build left bullets from chart data
+        lbullets = []
+        if cats and vals:
+            n = min(len(cats), len(vals))
+            for i in range(n):
+                lbullets.append(
+                    f"{_coerce_str(cats[i])}: {_coerce_float(vals[i]):.0f} {metric}")
+        else:
+            lbullets = [s.strip() for s in hypothesis.text.split(". ") if s.strip()]
+
+        self._render_finding_bullets(ltf, lbullets)
+
+        # Right column: evidence
+        ev_bullets = self._get_evidence_bullets(evidence, 5)
+        right_box = slide.shapes.add_textbox(Inches(6.7), Inches(1.6), Inches(6.1), Inches(5.2))
+        rtf = right_box.text_frame
+        rtf.word_wrap = True
+
+        if ev_bullets:
+            for j, (snippet, source) in enumerate(ev_bullets):
+                p = rtf.paragraphs[0] if j == 0 else rtf.add_paragraph()
+                p.text = self._strip_markdown(snippet[:140])
+                p.font.size = Pt(11)
+                p.font.bold = True
+                if j > 0:
+                    p.space_before = Pt(10)
+                p_src = rtf.add_paragraph()
+                p_src.text = source
+                p_src.font.size = Pt(9)
+                p_src.font.color.rgb = RGBColor(128, 128, 128)
+        else:
+            p = rtf.paragraphs[0]
+            p.text = hypothesis.testable_claim
+            p.font.size = Pt(11)
+
+        self._add_footer(slide)
+
+    # ------------------------------------------------------------------
+    # Dynamic medium/long chart slides
+    # ------------------------------------------------------------------
+
+    def _add_dynamic_chart_slides(self, prs, storyline: Storyline, research: ResearchResults):
+        """Add chart slides for medium/long decks based on available slide_data keys."""
+        sd = storyline.slide_data or {}
+
+        # Track which chart types the hypotheses already covered so we don't double-up
+        hyp_chart_types = {
+            (h.chart_hint or {}).get("type", "bar").lower()
+            for h in storyline.hypotheses
+        }
+
+        # Add each chart type that has data AND isn't already covered by a hypothesis slide
+        if "bar_chart" in sd:
+            self._add_bar_chart_slide(prs, storyline, research)
+
+        if "waterfall" in sd and "waterfall" not in hyp_chart_types:
+            self._add_waterfall_slide(prs, storyline)
+
+        if "pie" in sd and "pie" not in hyp_chart_types:
+            self._add_pie_chart_slide(prs, storyline, research)
+
+        if "tornado" in sd and "tornado" not in hyp_chart_types:
+            self._add_tornado_chart_slide(prs, storyline, research)
 
     # ------------------------------------------------------------------
     # Data-driven chart renderers

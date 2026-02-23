@@ -39,6 +39,15 @@ Action title rules (MANDATORY):
 - The So What test: a partner reads ONLY the titles and understands the full argument
 - Chart categories must use real named entities, never "Factor 1", "Segment A", "BU-A"
 - chart_hint values must be realistic, research-backed numbers for the specific topic
+- chart_hint.type controls the SLIDE LAYOUT — choose the best fit per hypothesis:
+  * "bar"        → horizontal bar + evidence column (comparisons, rankings, benchmarks)
+  * "waterfall"  → waterfall chart + sidebar (value bridge, cost breakdown, P&L)
+  * "pie"        → pie chart + sidebar (market share, segment mix, portfolio)
+  * "tornado"    → butterfly/sensitivity chart (risk factors, scenario ranges)
+  * "timeline"   → horizontal milestone timeline (roadmap, phases, history)
+  * "three_kpi"  → 3 large KPI metric boxes (3 key headline numbers side-by-side)
+  * "two_column" → two column bullets (qualitative analysis, pros/cons, compare options)
+  Vary chart_hint.type across hypotheses — do not use "bar" for every slide
 
 WRITING STANDARDS (MANDATORY):
 - Pyramid principle: lead with conclusion/so-what FIRST, evidence below
