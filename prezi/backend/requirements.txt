@@ -4,6 +4,7 @@ python-pptx==0.6.23
 # LLM Providers
 anthropic>=0.18.1
 openai>=1.12.0
+google-generativeai>=0.8.0
 # Research Providers
 google-search-results>=2.4.2
 requests>=2.31.0
@@ -15,6 +16,7 @@ matplotlib>=3.7.0
 pillow>=10.0.0
 pymupdf>=1.23.0
 aiofiles>=23.2.1
+playwright>=1.40.0
 python-multipart>=0.0.6
 httpx>=0.26.0
 # Testing

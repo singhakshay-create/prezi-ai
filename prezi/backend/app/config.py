@@ -22,11 +22,13 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
     NVIDIA_API_KEY: Optional[str] = None
+    GOOGLE_API_KEY: Optional[str] = None
 
     # Research API Keys
     PERPLEXITY_API_KEY: Optional[str] = None
     BRAVE_API_KEY: Optional[str] = None
     SERP_API_KEY: Optional[str] = None
+    SERPER_API_KEY: Optional[str] = None
 
     # Database
     DATABASE_URL: str = "sqlite:///./data/prezi.db"
@@ -59,9 +61,33 @@ class Settings(BaseSettings):
         if _is_real_key(self.NVIDIA_API_KEY):
             providers.append({
                 "id": "nvidia",
-                "name": "Nvidia Kimi K2.5",
+                "name": "Kimi K2 (thinking)",
                 "available": True,
-                "description": "High performance alternative"
+                "description": "Extended chain-of-thought reasoning"
+            })
+            providers.append({
+                "id": "glm5",
+                "name": "GLM-5",
+                "available": True,
+                "description": "ZhipuAI GLM-5 via Nvidia NIM"
+            })
+            providers.append({
+                "id": "qwen",
+                "name": "Qwen3.5-397B",
+                "available": True,
+                "description": "Qwen3.5 MoE 397B via Nvidia NIM"
+            })
+            providers.append({
+                "id": "deepseek",
+                "name": "DeepSeek-V3.2",
+                "available": True,
+                "description": "DeepSeek-V3.2 via Nvidia NIM"
+            })
+            providers.append({
+                "id": "minimax",
+                "name": "MiniMax-M2",
+                "available": True,
+                "description": "MiniMax-M2 via Nvidia NIM"
             })
 
         # Add unavailable providers (grayed out in UI)
@@ -84,9 +110,30 @@ class Settings(BaseSettings):
         if not _is_real_key(self.NVIDIA_API_KEY):
             providers.append({
                 "id": "nvidia",
-                "name": "Nvidia Kimi K2.5",
+                "name": "Kimi K2 / GLM-5 / Qwen3.5 / DeepSeek-V3.2 / MiniMax-M2",
                 "available": False,
                 "description": "Requires NVIDIA_API_KEY"
+            })
+
+        if _is_real_key(self.GOOGLE_API_KEY):
+            providers.append({
+                "id": "gemini",
+                "name": "Gemini 3.0 Flash Preview",
+                "available": True,
+                "description": "Fast multimodal model with vision support"
+            })
+            providers.append({
+                "id": "gemini-pro",
+                "name": "Gemini 2.5 Pro",
+                "available": True,
+                "description": "Most capable Gemini model"
+            })
+        else:
+            providers.append({
+                "id": "gemini",
+                "name": "Gemini 3.0 Flash Preview / 2.5 Pro",
+                "available": False,
+                "description": "Requires GOOGLE_API_KEY"
             })
 
         return providers
@@ -125,6 +172,14 @@ class Settings(BaseSettings):
                 "name": "SerpAPI (Google)",
                 "available": True,
                 "description": "Google search results"
+            })
+
+        if _is_real_key(self.SERPER_API_KEY):
+            providers.append({
+                "id": "serper",
+                "name": "Serper (Google Search)",
+                "available": True,
+                "description": "Google search via Serper.dev"
             })
 
         return providers

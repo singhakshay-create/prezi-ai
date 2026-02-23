@@ -14,14 +14,14 @@ if [ ! -f .env ]; then
     cp .env.example .env
     echo ""
     echo "[!] Please edit .env and add at least one LLM API key, then run this script again."
-    echo "    Required: ANTHROPIC_API_KEY, OPENAI_API_KEY, or NVIDIA_API_KEY"
+    echo "    Required: ANTHROPIC_API_KEY, OPENAI_API_KEY, NVIDIA_API_KEY, or GOOGLE_API_KEY"
     exit 1
 fi
 
 # Warn if no LLM key is configured
-if ! grep -qE "^(ANTHROPIC|OPENAI|NVIDIA)_API_KEY=.+" .env; then
+if ! grep -qE "^(ANTHROPIC|OPENAI|NVIDIA|GOOGLE)_API_KEY=.+" .env; then
     echo "[WARNING] No LLM API key found in .env."
-    echo "          Add ANTHROPIC_API_KEY, OPENAI_API_KEY, or NVIDIA_API_KEY to generate presentations."
+    echo "          Add ANTHROPIC_API_KEY, OPENAI_API_KEY, NVIDIA_API_KEY, or GOOGLE_API_KEY to generate presentations."
     echo ""
 fi
 
@@ -72,6 +72,10 @@ else
     "$VENV_PIP" install -r backend/requirements.txt --quiet
 fi
 echo "[OK] Python dependencies installed."
+
+echo "Installing Playwright browser (Chromium for HTML→PPTX rendering)..."
+"$VENV_PYTHON" -m playwright install chromium 2>&1 | tail -3
+echo "[OK] Playwright Chromium ready."
 
 # --- Create data directories ---
 mkdir -p data/presentations data/templates
